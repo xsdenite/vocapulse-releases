@@ -42,7 +42,7 @@ else
   C_BOLD=''; C_RED=''; C_GRN=''; C_YLW=''; C_DIM=''; C_RST=''
 fi
 
-info()  { printf '%s==>%s %s\n' "$C_GRN" "$C_RST" "$*"; }
+info()  { printf '%s==>%s %s\n' "$C_GRN" "$C_RST" "$*" >&2; }
 warn()  { printf '%s==>%s %s\n' "$C_YLW" "$C_RST" "$*" >&2; }
 fail()  { printf '%sERROR:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
 
