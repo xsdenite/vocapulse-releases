@@ -9,8 +9,8 @@
 # post-0.2.8; CI automation comes later).
 #
 # v1 scope:
-#   - x86_64 only
-#   - deb / rpm / pacman families
+#   - Linux x86_64 (deb / rpm / pacman families)
+#   - macOS universal (Apple Silicon + Intel)
 #   - trusts GitHub HTTPS TLS for integrity (no SHA256SUMS yet)
 #
 # v1.1 TODO: publish + verify SHA256SUMS (ed25519-signed) before install.
