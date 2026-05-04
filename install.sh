@@ -34,6 +34,9 @@ REPO="xsdenite/vocapulse-releases"
 RELEASES_BASE="https://github.com/${REPO}/releases"
 TMPDIR="/tmp/vocapulse-install-$$"
 
+# Module-level state so the EXIT trap can detach a mounted DMG even on failure.
+MAC_DMG_MOUNT=""
+
 # Colors (only if stdout is a TTY)
 if [[ -t 1 ]]; then
   C_BOLD=$'\033[1m'; C_RED=$'\033[31m'; C_GRN=$'\033[32m'
@@ -50,9 +53,28 @@ fail()  { printf '%sERROR:%s %s\n' "$C_RED" "$C_RST" "$*" >&2; exit 1; }
 # cleanup: wiped tmp dir on any exit (normal, error, or signal)
 # --------------------------------------------------------------------------
 cleanup() {
+  # Detach any DMG we mounted (mac path), best-effort.
+  if [[ -n "$MAC_DMG_MOUNT" && -d "$MAC_DMG_MOUNT" ]]; then
+    hdiutil detach -quiet "$MAC_DMG_MOUNT" 2>/dev/null || true
+    MAC_DMG_MOUNT=""
+  fi
   [[ -d "$TMPDIR" ]] && rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
+
+# --------------------------------------------------------------------------
+# detect_os — echoes one of: linux | mac
+#
+# Used by main() to dispatch between install_linux and install_mac.
+# --------------------------------------------------------------------------
+detect_os() {
+  local kernel; kernel="$(uname -s)"
+  case "$kernel" in
+    Linux)  echo linux ;;
+    Darwin) echo mac ;;
+    *)      fail "unsupported OS: $kernel" ;;
+  esac
+}
 
 # --------------------------------------------------------------------------
 # detect_distro — echoes one of: deb | rpm | pacman
@@ -238,11 +260,9 @@ print_post_install() {
 }
 
 # --------------------------------------------------------------------------
-# main — glue
+# install_linux — full Linux install flow (deb/rpm/pacman).
 # --------------------------------------------------------------------------
-main() {
-  info "VocaPulse installer"
-
+install_linux() {
   # Sanity deps
   command -v curl >/dev/null 2>&1 || fail "curl is required but not found"
   command -v sudo >/dev/null 2>&1 || fail "sudo is required but not found"
@@ -269,6 +289,79 @@ main() {
   local path; path="$(download_artifact "$fmt" "$latest")"
   install_artifact "$fmt" "$path"
   print_post_install "$latest"
+}
+
+# --------------------------------------------------------------------------
+# install_mac — downloads the universal2 DMG, mounts it, and copies
+# VocaPulse.app into /Applications.
+#
+# DMG naming: VocaPulse-${ver}.dmg (no arch suffix; single universal binary).
+# We deliberately skip arch detection — the same DMG serves Apple Silicon
+# and Intel.
+# --------------------------------------------------------------------------
+install_mac() {
+  command -v curl >/dev/null 2>&1 || fail "curl is required but not found"
+  command -v hdiutil >/dev/null 2>&1 || fail "hdiutil is required but not found"
+
+  local ver dmg_file dmg_url mount target
+  ver="$(fetch_latest_version)"
+  info "Latest release: v${ver}"
+
+  dmg_file="VocaPulse-${ver}.dmg"
+  dmg_url="${RELEASES_BASE}/download/v${ver}/${dmg_file}"
+
+  mkdir -p "$TMPDIR"
+  info "Downloading ${dmg_file}"
+  curl -fL --progress-bar -o "$TMPDIR/$dmg_file" "$dmg_url" \
+    || fail "download failed: $dmg_url"
+
+  info "Mounting disk image"
+  # hdiutil attach prints a tab-separated table; the volume row's last field
+  # is the mount point. Read it with awk for robustness against extra rows.
+  mount="$(hdiutil attach -nobrowse -readonly "$TMPDIR/$dmg_file" \
+    | awk -F'\t' '/\/Volumes\// { print $NF; exit }')"
+  [[ -n "$mount" ]] || fail "failed to determine DMG mount point"
+  MAC_DMG_MOUNT="$mount"  # let cleanup detach on any exit path
+
+  [[ -d "$mount/VocaPulse.app" ]] \
+    || fail "VocaPulse.app not found in $dmg_file"
+
+  target="/Applications"
+  if [[ -w "$target" ]]; then
+    rm -rf "$target/VocaPulse.app"
+    cp -R "$mount/VocaPulse.app" "$target/VocaPulse.app"
+    # Notarized DMGs usually clear the quarantine bit on first open via Gatekeeper,
+    # but a curl-downloaded DMG occasionally retains it. Best-effort clear; signed
+    # binaries don't need this so failure is silent.
+    xattr -dr com.apple.quarantine "$target/VocaPulse.app" 2>/dev/null || true
+  else
+    info "Admin required to install into /Applications (sudo will prompt)"
+    sudo rm -rf "$target/VocaPulse.app"
+    sudo cp -R "$mount/VocaPulse.app" "$target/VocaPulse.app"
+    # Notarized DMGs usually clear the quarantine bit on first open via Gatekeeper,
+    # but a curl-downloaded DMG occasionally retains it. Best-effort clear; signed
+    # binaries don't need this so failure is silent.
+    sudo xattr -dr com.apple.quarantine "$target/VocaPulse.app" 2>/dev/null || true
+  fi
+
+  hdiutil detach -quiet "$mount" 2>/dev/null || true
+  MAC_DMG_MOUNT=""
+
+  info "Installed -> /Applications/VocaPulse.app"
+  info "Launch: open -a VocaPulse"
+}
+
+# --------------------------------------------------------------------------
+# main — dispatch on OS.
+# --------------------------------------------------------------------------
+main() {
+  info "VocaPulse installer"
+  local os; os="$(detect_os)"
+  case "$os" in
+    linux) install_linux ;;
+    mac)   install_mac ;;
+    *)     fail "unreachable: detect_os returned '$os'" ;;
+  esac
 }
 
 # --------------------------------------------------------------------------
